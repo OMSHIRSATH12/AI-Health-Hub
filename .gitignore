@@ -3,3 +3,6 @@ venv/
 
 # Python cache files
 __pycache__/
+
+# Streamlit secrets folder (This is the new important line)
+.streamlit/
