@@ -1,11 +1,37 @@
 import streamlit as st
 import pandas as pd
-from deep_translator import GoogleTranslator
+import google.generativeai as genai
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
-import plotly.express as px # New import for plotting
+import plotly.express as px
 
-# --- Machine Learning Model ---
+# --- Page Configuration ---
+st.set_page_config(page_title="AI Health Assistant", page_icon="🩺")
+
+# --- API Configuration ---
+try:
+    genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
+except Exception as e:
+    st.error("API Key not found or invalid. Please ensure you have a .streamlit/secrets.toml file with your GOOGLE_API_KEY.")
+    st.stop()
+
+# --- Gemini LLM Function (with the new, improved prompt) ---
+def get_gemini_response(question):
+    model = genai.GenerativeModel('gemini-1.5-flash')
+    prompt = f"""You are a helpful and knowledgeable AI Health Assistant. 
+    Your role is to provide clear, safe, and informative answers to health-related questions.
+    When asked about a medical emergency (like snake bite, heart attack, severe bleeding), your first priority is to advise the user to contact local emergency services immediately.
+    Provide first-aid steps only as something to do while waiting for professional help.
+    Do not provide a diagnosis. Always recommend consulting a doctor for any medical advice.
+
+    IMPORTANT RULE: If the user asks a question that is NOT related to health, wellness, first-aid, or medicine, you MUST politely decline to answer. You should state that you are an AI Health Assistant and can only answer health-related questions. Do not answer the off-topic question.
+    
+    Now, please answer the following question: {question}"""
+    
+    response = model.generate_content(prompt)
+    return response.text
+
+# --- Machine Learning Model & Data Loading ---
 @st.cache_resource
 def train_symptom_checker_model():
     symptom_df = pd.read_csv("data/symptom_data.csv")
@@ -18,87 +44,55 @@ def train_symptom_checker_model():
     model.fit(X_train, y_train)
     return model, features
 
-# --- CORE CHATBOT FUNCTIONALITY ---
-@st.cache_data
-def load_qa_data():
-    df = pd.read_csv("data/qa_data.csv")
-    return df
-
-def get_answer(user_question, df):
-    user_question = user_question.lower()
-    for index, row in df.iterrows():
-        question_keywords = row['question'].lower().split()
-        if any(word in user_question.split() for word in question_keywords):
-            return row['answer']
-    return "I'm sorry, I don't have an answer for that."
-
 # --- STREAMLIT USER INTERFACE ---
+
+# --- Sidebar Content ---
+with st.sidebar:
+    st.title("🩺 AI Health Assistant")
+    st.info("This project is a hackathon demo and not a substitute for professional medical advice.")
+
+# --- Main Page Content ---
 st.title("AI Health Assistant")
 
-model, features = train_symptom_checker_model()
-# Add a new tab for the dashboard
-tab1, tab2, tab3 = st.tabs(["Chatbot", "Symptom Checker", "Health Dashboard"])
+symptom_model, features = train_symptom_checker_model()
+tab1, tab2, tab3 = st.tabs(["Super Chatbot", "Symptom Checker", "COVID-19 Dashboard"])
 
-# --- Chatbot Tab ---
+# --- Super Chatbot Tab (Powered by Gemini) ---
 with tab1:
-    qa_df = load_qa_data()
-    language_options = {'English': 'en', 'Hindi': 'hi', 'Marathi': 'mr'}
-    selected_language_name = st.sidebar.selectbox("Select Language", options=list(language_options.keys()))
-    selected_language_code = language_options[selected_language_name]
+    st.header("Your Personal AI Health Advisor")
+    st.write("Ask me anything about health, from first-aid for a snake bite to questions about nutrition.")
+    
+    user_input = st.text_input("", placeholder="e.g., 'What are the first aid steps for a snake bite?'", key="chatbot_input")
 
-    welcome_text = GoogleTranslator(source='auto', target=selected_language_code).translate("Hello! Ask me a health-related question.")
-    input_placeholder = GoogleTranslator(source='auto', target=selected_language_code).translate("Type your question here...")
-
-    st.write(welcome_text)
-    user_input = st.text_input("", placeholder=input_placeholder, key="chatbot_input")
-
-    if user_input:
-        critical_keywords = ['chest pain', 'breathing difficulty', 'suicide', 'emergency', 'heart attack', 'severe bleeding']
-        translated_input_for_check = GoogleTranslator(source='auto', target='en').translate(user_input).lower()
-        is_emergency = any(keyword in translated_input_for_check for keyword in critical_keywords)
-
-        if is_emergency:
-            emergency_title = GoogleTranslator(source='en', target=selected_language_code).translate("Emergency Situation Detected!")
-            emergency_body = GoogleTranslator(source='en', target=selected_language_code).translate("Your message contains critical keywords. Please seek immediate medical help. Contact your local emergency services now.")
-            st.error(f"**{emergency_title}**\n\n{emergency_body}")
+    if st.button("Get Answer"):
+        if user_input:
+            with st.spinner("The AI is thinking..."):
+                response = get_gemini_response(user_input)
+                st.markdown(response)
         else:
-            translated_input = GoogleTranslator(source='auto', target='en').translate(user_input)
-            answer = get_answer(translated_input, qa_df)
-            translated_answer = GoogleTranslator(source='en', target=selected_language_code).translate(answer)
-            st.write(translated_answer)
+            st.warning("Please enter a question.")
 
-# --- Symptom Checker Tab ---
+# --- Symptom Checker & Dashboard Tabs (No changes) ---
 with tab2:
     st.header("Symptom Checker")
-    st.write("Select the symptoms you are experiencing, and the AI will predict a possible condition.")
+    st.write("Select your symptoms, and the AI will predict a possible condition.")
     user_symptoms = {}
     for feature in features:
         user_symptoms[feature] = st.checkbox(feature.replace('_', ' ').title())
-        
     if st.button("Predict Condition"):
         input_data = [user_symptoms[feature] for feature in features]
-        prediction = model.predict([input_data])
+        prediction = symptom_model.predict([input_data])
         st.subheader("Prediction:")
         st.success(f"Based on your symptoms, the model predicts you might have: **{prediction[0]}**")
-        st.warning("Disclaimer: This is an AI prediction and not a substitute for professional medical advice. Please consult a doctor.")
+        st.warning("Disclaimer: This is an AI prediction and not a substitute for professional medical advice.")
 
-# --- NEW: Health Dashboard Tab ---
 with tab3:
-    st.header("Dengue Cases Dashboard - Maharashtra")
-    
-    # Load the public health data
-    dengue_df = pd.read_csv("data/public_dengue_stats.csv")
-    
-    # Allow users to filter by city
-    cities = dengue_df['City'].unique()
-    selected_cities = st.multiselect("Select cities to compare:", options=cities, default=cities)
-    
-    if selected_cities:
-        # Filter the dataframe based on user selection
-        filtered_df = dengue_df[dengue_df['City'].isin(selected_cities)]
-        
-        # Create an interactive bar chart
-        fig = px.bar(filtered_df, x='Month', y='Cases', color='City', title="Monthly Dengue Cases by City")
+    st.header("COVID-19 India Dashboard")
+    covid_df = pd.read_csv("data/covid_india_snapshot.csv")
+    metric_options = ['Total Cases', 'Active', 'Discharged', 'Deaths']
+    selected_metric = st.selectbox("Select a metric to visualize:", options=metric_options)
+    if selected_metric:
+        df_sorted = covid_df.sort_values(by=selected_metric, ascending=False)
+        fig = px.bar(df_sorted, x='State/UTs', y=selected_metric, title=f"State-wise Comparison of {selected_metric}")
         st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.warning("Please select at least one city to display the data.")
+    st.dataframe(covid_df)
