@@ -10,23 +10,21 @@ import logging
 import numpy as np
 import os
 from io import BytesIO
-import speech_recognition as sr
 from gtts import gTTS
 import base64
 
 # --- CONFIGURATIONS ---
 warnings.filterwarnings("ignore", category=UserWarning)
 logging.getLogger('google.generativeai').setLevel(logging.WARNING)
-st.set_page_config(page_title="AI Health Assistant", page_icon="🩺")
+st.set_page_config(page_title="AI Health Assistant", page_icon="🩺", layout="wide")
 
 # --- API & MODEL SETUP ---
 try:
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
+    gemini_model = genai.GenerativeModel('gemini-1.5-flash')
 except Exception as e:
     st.error("API Key not found or invalid. Please check your .streamlit/secrets.toml file.")
     st.stop()
-
-gemini_model = genai.GenerativeModel('gemini-1.5-flash')
 
 # --- DATA & ML MODEL FUNCTIONS ---
 @st.cache_resource
@@ -51,139 +49,132 @@ def train_personalized_symptom_model():
     model.fit(X, y)
     return model, X.columns, le, mlb.classes_
 
-# --- HELPER FUNCTIONS (AI, VOICE) ---
+# --- HELPER FUNCTIONS ---
 def get_gemini_response(question, chat_history, language_name):
     api_history = []
-    for msg in chat_history:
+    for msg in chat_history[:-1]:
         role = 'model' if msg['role'] == 'assistant' else msg['role']
         api_history.append({'role': role, 'parts': [{'text': msg['content']}]})
-        
-    # --- THIS IS THE CORRECTED LINE ---
     chat = gemini_model.start_chat(history=api_history)
-    
-    prompt = f"""You are an AI Health Assistant. The user's preferred language is {language_name}. You MUST respond in this language. Your response will be converted to audio, so keep your answers conversational and reasonably concise.
-    **CRITICAL INSTRUCTION: Analyze the entire CHAT HISTORY provided to understand the context of the conversation. The user may ask follow-up questions using pronouns like "it", "that", or "they". You must use the history to figure out what these pronouns refer to.**
-    Your standard rules are:
-    1. Provide safe, informative answers to health questions.
-    2. Advise contacting emergency services for any medical emergency.
-    3. Do not provide a diagnosis. Always recommend consulting a doctor.
-    4. If the user asks an off-topic question, politely decline in their preferred language.
-    Based on the full conversation history, provide a helpful and context-aware response to the user's latest message.
-    Latest User Message: "{question}" """
-    
-    response_stream = chat.send_message(prompt, stream=True)
-    for chunk in response_stream:
-        yield chunk.text
+    prompt = f"""You are a specialized AI Health Assistant. Your ONLY function is to answer health-related questions. You must adhere to the following rules strictly.
+
+    CHAT HISTORY:
+    {chat_history[:-1]}
+
+    USER'S LATEST QUESTION: "{question}"
+
+    YOUR TASK:
+    1.  First, analyze the user's latest question. Is it related to health, medicine, wellness, symptoms, diseases, or first-aid?
+    2.  IF THE QUESTION IS NOT a health question, you must respond with ONLY this exact sentence in the user's preferred language ({language_name}): "I am an AI Health Assistant and can only answer health-related questions." DO NOT answer the off-topic question.
+    3.  IF THE QUESTION IS a health question, then provide a helpful, safe, and informative answer in {language_name}. Use the chat history to understand context for follow-up questions. Never provide a diagnosis. Always recommend consulting a doctor. For emergencies, prioritize advising the user to contact emergency services.
+    """
+    response = chat.send_message(prompt)
+    return response.text
+
+def autoplay_audio(audio_bytes: bytes):
+    b64 = base64.b64encode(audio_bytes).decode()
+    md = f'<audio controls autoplay="true" style="display:none;"><source src="data:audio/mp3;base64,{b64}" type="audio/mp3"></audio>'
+    st.markdown(md, unsafe_allow_html=True)
 
 @st.cache_data
-def text_to_speech(text, lang_code):
+def text_to_speech(text: str, lang_code: str):
     try:
+        if not isinstance(text, str) or not text.strip():
+            return None
         tts = gTTS(text=text, lang=lang_code, slow=False)
         audio_buffer = BytesIO()
         tts.write_to_fp(audio_buffer)
         audio_buffer.seek(0)
-        audio_bytes = audio_buffer.read()
-        return audio_bytes
+        return audio_buffer.read()
     except Exception as e:
-        st.error(f"Text-to-speech failed: {e}")
+        st.warning(f"Could not process text-to-speech: {e}")
         return None
-
-def autoplay_audio(audio_bytes: bytes):
-    b64 = base64.b64encode(audio_bytes).decode()
-    md = f"""
-        <audio controls autoplay="true" style="display:none;">
-        <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
-        </audio>
-        """
-    st.markdown(md, unsafe_allow_html=True)
 
 # --- STREAMLIT UI ---
 with st.sidebar:
     st.title("🩺 AI Health Assistant")
-    st.info("A hackathon demo project. Not a substitute for professional medical advice.")
+    st.info("A hackathon demo project.")
     language_options = {'English': 'en', 'Hindi': 'hi', 'Marathi': 'mr'}
     selected_language_name = st.selectbox("Select Language", options=list(language_options.keys()))
     selected_language_code = language_options[selected_language_name]
+    st.toggle("Mute AI Voice", key="mute_voice", value=False)
 
 st.title("AI Health Assistant")
 symptom_model, all_features, gender_encoder, all_symptoms = train_personalized_symptom_model()
 
-tab1, tab2, tab3 = st.tabs(["Super Chatbot (Voice Enabled)", "Personalized Predictor", "COVID-19 Dashboard"])
+tab1, tab2, tab3 = st.tabs(["Super Chatbot", "Personalized Predictor", "COVID-19 Dashboard"])
 
 with tab1:
     st.header("Your Personal AI Health Advisor")
-    if 'chat_history' not in st.session_state:
+    if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
 
     for message in st.session_state.chat_history:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
-    
-    user_input = None
-    if st.button("🎤 Ask with Voice"):
-        r = sr.Recognizer()
-        with sr.Microphone() as source:
-            st.info("Listening...")
-            try:
-                audio = r.listen(source, timeout=5, phrase_time_limit=10)
-                st.info("Processing...")
-                user_input = r.recognize_google(audio, language=selected_language_code)
-            except Exception as e:
-                st.warning("Could not process audio. Please try again or type your question.")
-    
-    text_input = st.chat_input(f"Or type your question in {selected_language_name}...")
-    if text_input:
-        user_input = text_input
 
-    if user_input:
-        st.session_state.chat_history.append({"role": "user", "content": user_input})
+    if prompt := st.chat_input(f"Ask a health question in {selected_language_name}..."):
+        st.session_state.chat_history.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
-            st.markdown(user_input)
-        
-        critical_keywords = ['chest pain', 'breathing difficulty', 'suicide', 'emergency', 'heart attack', 'severe bleeding', 'unconscious']
-        is_emergency = any(keyword in user_input.lower() for keyword in critical_keywords)
-        
+            st.markdown(prompt)
+
         with st.chat_message("assistant"):
-            if is_emergency:
+            lower_prompt = prompt.lower()
+            critical_keywords = ['chest pain', 'breathing difficulty', 'suicide', 'emergency', 'heart attack', 'severe bleeding', 'unconscious']
+            info_keywords = ['what', 'symptoms', 'tell me', 'about', 'information', 'define', 'explain', 'is a']
+            
+            is_emergency_keyword_present = any(keyword in lower_prompt for keyword in critical_keywords)
+            is_info_query = any(keyword in lower_prompt for keyword in info_keywords)
+            is_true_emergency = is_emergency_keyword_present and not is_info_query
+
+            if is_true_emergency:
+                # The emergency beep now plays ALWAYS, regardless of the mute toggle.
                 with open("assets/alert.mp3", "rb") as f:
                     audio_bytes = f.read()
                 autoplay_audio(audio_bytes)
-                emergency_text = "Emergency situation detected. Please contact your local emergency services immediately. In India, you can dial 112."
+                
+                emergency_text = "Emergency detected. Please contact local emergency services immediately (e.g., dial 112 in India)."
                 st.error(emergency_text)
                 st.session_state.chat_history.append({"role": "assistant", "content": emergency_text})
             else:
                 with st.spinner("The AI is thinking..."):
-                    response_stream = get_gemini_response(user_input, st.session_state.chat_history, selected_language_name)
-                    full_response = st.write_stream(response_stream)
-                st.session_state.chat_history.append({"role": "assistant", "content": full_response})
-                audio_bytes = text_to_speech(full_response, selected_language_code)
-                if audio_bytes:
-                    autoplay_audio(audio_bytes)
+                    full_response = get_gemini_response(prompt, st.session_state.chat_history, selected_language_name)
+                    st.markdown(full_response)
+                    st.session_state.chat_history.append({"role": "assistant", "content": full_response})
+                    
+                    # The conversational voice correctly respects the mute toggle.
+                    if not st.session_state.mute_voice:
+                        audio_bytes = text_to_speech(full_response, selected_language_code)
+                        if audio_bytes:
+                            autoplay_audio(audio_bytes)
 
 with tab2:
     st.header("Personalized Symptom Checker")
     st.write("Enter your details and symptoms for a more personalized prediction.")
     with st.form("personalized_form"):
         col1, col2 = st.columns(2)
-        age = col1.number_input("Enter your Age", min_value=0, max_value=120, value=25)
-        gender = col2.selectbox("Select your Gender", options=['Male', 'Female'])
+        age = col1.number_input("Enter your Age", 0, 120, 25)
+        gender = col2.selectbox("Select your Gender", options=gender_encoder.classes_)
         selected_symptoms = st.multiselect("Select your symptoms:", options=sorted(all_symptoms))
         submitted = st.form_submit_button("Predict Condition")
+    
     if submitted:
-        if not selected_symptoms: st.warning("Please select at least one symptom.")
+        if not selected_symptoms:
+            st.warning("Please select at least one symptom.")
         else:
             user_input_df = pd.DataFrame(columns=all_features)
             user_input_df.loc[0, 'Age'] = age
             user_input_df.loc[0, 'Gender'] = gender_encoder.transform([gender])[0]
             for symptom in all_symptoms:
                 user_input_df.loc[0, symptom] = 1 if symptom in selected_symptoms else 0
-            user_input_df = user_input_df.fillna(0)
-            prediction = symptom_model.predict(user_input_df[all_features])
-            prediction_proba = symptom_model.predict_proba(user_input_df[all_features])
-            st.subheader("Prediction:")
+            user_input_df = user_input_df.fillna(0)[all_features]
+            prediction = symptom_model.predict(user_input_df)
+            prediction_proba = symptom_model.predict_proba(user_input_df)
+            
+            st.subheader("Prediction Result:")
             st.success(f"Based on your details, a possible condition could be: **{prediction[0]}**")
             st.info(f"Confidence: {prediction_proba.max()*100:.2f}%")
-            st.warning("Disclaimer: This is an AI prediction and not a substitute for professional medical advice.")
+            st.warning("Disclaimer: This is not professional medical advice.")
 
 with tab3:
     st.header("COVID-19 India Dashboard")
