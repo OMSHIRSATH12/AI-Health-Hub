@@ -32,31 +32,19 @@ def get_gemini_response(question):
     response = model.generate_content(prompt)
     return response.text
 
-# --- Machine Learning Model & Data Loading (UPGRADED) ---
+# --- Machine Learning Model & Data Loading ---
 @st.cache_resource
 def train_symptom_checker_model():
-    # Load the new, larger symptom dataset
     symptom_df = pd.read_csv("data/symptom_dataset_large.csv")
-    
-    # The new dataset might have an extra unnamed column at the end, let's drop it if it exists
     if 'Unnamed: 133' in symptom_df.columns:
         symptom_df = symptom_df.drop('Unnamed: 133', axis=1)
-        
-    # The target column in this dataset is named 'prognosis'
     target = 'prognosis'
-    # The features are all the other columns
     features = symptom_df.columns.drop(target)
-    
     X = symptom_df[features]
     y = symptom_df[target]
-    
-    # Split data for training and testing
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-    
-    # Initialize and train the Logistic Regression model
     model = LogisticRegression()
     model.fit(X_train, y_train)
-    
     return model, features
 
 # --- STREAMLIT USER INTERFACE ---
@@ -85,45 +73,51 @@ with tab1:
         else:
             st.warning("Please enter a question.")
 
-# --- Symptom Checker Tab (UPGRADED) ---
+# --- Symptom Checker Tab ---
 with tab2:
     st.header("Advanced Symptom Checker")
     st.write("Select the symptoms you are experiencing from the list below.")
-    
-    # Create a form for a cleaner layout
     with st.form("symptom_form"):
-        # Dynamically create checkboxes for all symptoms from the new dataset
         user_symptoms = {}
-        # We'll display them in columns for a better look
         cols = st.columns(3)
         for i, feature in enumerate(features):
             user_symptoms[feature] = cols[i % 3].checkbox(feature.replace('_', ' ').title())
-            
-        # Add a submit button to the form
         submitted = st.form_submit_button("Predict Condition")
-
     if submitted:
-        # Prepare the user's input for the model
-        input_data = [int(user_symptoms[feature]) for feature in features] # Convert boolean (True/False) to int (1/0)
-        
-        # Check if any symptom is selected
+        input_data = [int(user_symptoms[feature]) for feature in features]
         if sum(input_data) == 0:
             st.warning("Please select at least one symptom.")
         else:
-            # Make a prediction
             prediction = symptom_model.predict([input_data])
             st.subheader("Prediction:")
             st.success(f"Based on your symptoms, a possible condition could be: **{prediction[0]}**")
-            st.warning("Disclaimer: This is an AI prediction based on a public dataset and is not a substitute for professional medical advice. Please consult a doctor.")
+            st.warning("Disclaimer: This is an AI prediction based on a public dataset and is not a substitute for professional medical advice.")
 
-# --- COVID-19 Dashboard Tab ---
+# --- COVID-19 Dashboard Tab (ENHANCED) ---
 with tab3:
     st.header("COVID-19 India Dashboard")
+    st.write("An interactive dashboard to visualize the COVID-19 status across states in India.")
+    
     covid_df = pd.read_csv("data/covid_india_snapshot.csv")
-    metric_options = ['Total Cases', 'Active', 'Discharged', 'Deaths']
+    
+    # --- NEW: Calculate new metrics ---
+    covid_df['Discharge Ratio (%)'] = round((covid_df['Discharged'] / covid_df['Total Cases']) * 100, 2)
+    covid_df['Death Ratio (%)'] = round((covid_df['Deaths'] / covid_df['Total Cases']) * 100, 2)
+
+    # --- NEW: Add the new metrics to the dropdown options ---
+    metric_options = ['Total Cases', 'Active', 'Discharged', 'Deaths', 'Discharge Ratio (%)', 'Death Ratio (%)']
     selected_metric = st.selectbox("Select a metric to visualize:", options=metric_options)
+    
     if selected_metric:
         df_sorted = covid_df.sort_values(by=selected_metric, ascending=False)
-        fig = px.bar(df_sorted, x='State/UTs', y=selected_metric, title=f"State-wise Comparison of {selected_metric}")
+        
+        fig = px.bar(df_sorted, 
+                     x='State/UTs', 
+                     y=selected_metric, 
+                     title=f"State-wise Comparison of {selected_metric}",
+                     labels={'State/UTs': 'State / Union Territory'})
+        
+        fig.update_layout(xaxis_title="State / Union Territory", yaxis_title=f"Value for {selected_metric}")
         st.plotly_chart(fig, use_container_width=True)
+    
     st.dataframe(covid_df)
