@@ -23,11 +23,11 @@ except Exception as e:
     st.error("API Key not found or invalid. Please ensure you have a .streamlit/secrets.toml file with your GOOGLE_API_KEY.")
     st.stop()
 
-# --- Gemini LLM Function ---
+# --- Gemini LLM Function (Now language-aware) ---
 # Initialize the generative model
 model = genai.GenerativeModel('gemini-1.5-flash')
 
-def get_gemini_response(question, chat_history):
+def get_gemini_response(question, chat_history, language):
     api_history = []
     for msg in chat_history:
         role = 'model' if msg['role'] == 'assistant' else msg['role']
@@ -35,10 +35,14 @@ def get_gemini_response(question, chat_history):
 
     chat = model.start_chat(history=api_history)
     
-    prompt = f"""You are a helpful and knowledgeable AI Health Assistant. Your role is to provide clear, safe, and informative answers to health-related questions based on the provided chat history and the new question.
+    # --- NEW: The prompt now includes the selected language ---
+    prompt = f"""You are a helpful and knowledgeable AI Health Assistant. 
+    The user is communicating in {language}. You MUST respond in {language}.
+    Your role is to provide clear, safe, and informative answers to health-related questions.
     When asked about a medical emergency, your first priority is to advise the user to contact local emergency services.
     Do not provide a diagnosis. Always recommend consulting a doctor.
-    IMPORTANT RULE: If the user asks a question that is NOT related to health, wellness, or medicine, you MUST politely decline.
+    IMPORTANT RULE: If the user asks a question that is NOT related to health, wellness, or medicine, you MUST politely decline in {language}.
+    
     Now, please answer the following question: {question}"""
     
     response_stream = chat.send_message(prompt, stream=True)
@@ -62,10 +66,20 @@ def train_symptom_checker_model():
     return model, features
 
 # --- STREAMLIT USER INTERFACE ---
-# --- Sidebar Content ---
+# --- Sidebar Content (CORRECTED) ---
 with st.sidebar:
     st.title("🩺 AI Health Assistant")
     st.info("This project is a hackathon demo and not a substitute for professional medical advice.")
+    
+    # --- THIS IS THE LANGUAGE SELECTOR, NOW ADDED BACK ---
+    language_options = {'English': 'en', 'Hindi': 'hi', 'Marathi': 'mr'}
+    selected_language_name = st.selectbox("Select Language", options=list(language_options.keys()))
+    
+    st.subheader("Emergency Help")
+    if st.button("I NEED HELP IMMEDIATELY"):
+        # This part will now be translated by the Gemini model for simplicity
+        st.error("Please contact your local emergency services immediately. In India, you can dial 112 for any emergency.")
+
 
 # --- Main Page Content ---
 st.title("AI Health Assistant")
@@ -73,43 +87,30 @@ st.title("AI Health Assistant")
 symptom_model, features = train_symptom_checker_model()
 tab1, tab2, tab3 = st.tabs(["Super Chatbot", "Symptom Checker", "COVID-19 Dashboard"])
 
-# --- Super Chatbot Tab (CORRECTED with st.form) ---
+# --- Super Chatbot Tab (Now language-aware) ---
 with tab1:
     st.header("Your Personal AI Health Advisor")
     st.write("Ask me anything about health. I can remember our conversation.")
     
-    # Initialize chat history in session state
     if 'chat_history' not in st.session_state:
         st.session_state.chat_history = []
         
-    # Display the existing chat history
     for message in st.session_state.chat_history:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
             
-    # --- NEW: Use a form for the chat input for more stability ---
-    with st.form("chat_form", clear_on_submit=True):
-        user_input = st.text_input("Ask your question:", placeholder="e.g., 'What are the first aid steps for a snake bite?'", key="chat_input")
-        submitted = st.form_submit_button("Send")
-
-    # Process the form submission
-    if submitted and user_input:
-        # Append and display user message
+    if user_input := st.chat_input(f"Ask a health question in {selected_language_name}..."):
         st.session_state.chat_history.append({"role": "user", "content": user_input})
         with st.chat_message("user"):
             st.markdown(user_input)
             
-        # Get and display AI response
         with st.chat_message("assistant"):
             with st.spinner("The AI is thinking..."):
-                response_stream = get_gemini_response(user_input, st.session_state.chat_history)
+                # Pass the selected language to the Gemini function
+                response_stream = get_gemini_response(user_input, st.session_state.chat_history, selected_language_name)
                 full_response = st.write_stream(response_stream)
         
-        # Append AI response to history
         st.session_state.chat_history.append({"role": "assistant", "content": full_response})
-        
-        # Rerun the script to ensure the form is cleared and the new message is at the bottom
-        st.rerun()
 
 # --- Symptom Checker & Dashboard Tabs (No changes) ---
 with tab2:
