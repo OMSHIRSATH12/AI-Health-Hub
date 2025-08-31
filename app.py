@@ -13,6 +13,7 @@ from io import BytesIO
 import speech_recognition as sr
 from gtts import gTTS
 import base64
+import requests
 
 # --- CONFIGURATIONS ---
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -23,8 +24,9 @@ st.set_page_config(page_title="AI Health Assistant", page_icon="🩺", layout="w
 try:
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
     gemini_model = genai.GenerativeModel('gemini-1.5-flash')
+    NEWS_API_KEY = st.secrets["NEWS_API_KEY"]
 except Exception as e:
-    st.error("API Key not found or invalid. Please check your .streamlit/secrets.toml file.")
+    st.error("API Key not found or invalid. Please check your .streamlit/secrets.toml file for both GOOGLE_API_KEY and NEWS_API_KEY.")
     st.stop()
 
 # --- DATA & ML MODEL FUNCTIONS ---
@@ -53,37 +55,43 @@ def train_personalized_symptom_model():
 # --- HELPER FUNCTIONS ---
 def get_gemini_response(question, chat_history, language_name):
     api_history = []
-    for msg in chat_history:
+    for msg in chat_history[:-1]:
         role = 'model' if msg['role'] == 'assistant' else msg['role']
         api_history.append({'role': role, 'parts': [{'text': msg['content']}]})
-    
     chat = gemini_model.start_chat(history=api_history)
-    
-    prompt = f"""You are a specialized AI Health Assistant. Your persona is helpful, knowledgeable, and safe. You have one strict rule: you ONLY answer questions related to health, medicine, wellness, symptoms, diseases, or first-aid.
+    prompt = f"""You are a specialized AI Health Assistant. Your ONLY function is to answer health-related questions. You must adhere to the following rules strictly.
     If the user's question is NOT about a health topic, your ONLY response MUST be this exact sentence in {language_name}: "I am an AI Health Assistant and can only answer health-related questions."
     If the user's question IS about a health topic, provide a clear, informative, and safe answer in {language_name}.
-    - Use the provided CHAT HISTORY to understand the context of the conversation for follow-up questions.
-    - Never give a medical diagnosis.
-    - Always recommend consulting a professional doctor for medical advice.
+    - Use the provided CHAT HISTORY to understand the context for follow-up questions.
+    - Never give a medical diagnosis. Always recommend consulting a professional doctor.
     - For any mention of a medical emergency, prioritize advising the user to contact their local emergency services.
-    CHAT HISTORY: {chat_history}
+    CHAT HISTORY: {chat_history[:-1]}
     USER'S LATEST QUESTION: "{question}"
     """
     response = chat.send_message(prompt)
     return response.text
 
 def get_recommendations(disease, language_name):
-    prompt = f"""
-    A user has been predicted to have the condition: {disease}.
+    prompt = f"""A user has been predicted to have the condition: {disease}.
     Your task is to provide helpful, safe, and general recommendations for this condition in the user's preferred language ({language_name}).
     Structure your response with the following clear markdown sections:
-    - **Common Medicines:** List a few common, over-the-counter medicines. Start with a clear disclaimer that the user MUST consult a doctor before taking any medication.
+    - **Common Medicines:** List a few common, over-the-counter medicines. Start with a clear disclaimer that the user MUST consult a doctor or pharmacist before taking any medication.
     - **Dietary Recommendations:** Suggest simple, helpful dietary choices.
     - **General Precautions:** Provide a list of general advice, like getting rest or when to see a doctor.
-    Keep the language simple and easy to understand. This is for informational purposes only.
-    """
+    Keep the language simple and easy to understand. This is for informational purposes only."""
     response = gemini_model.generate_content(prompt)
     return response.text
+
+@st.cache_data
+def fetch_health_news(api_key, country_code='in'):
+    url = f"https://newsapi.org/v2/top-headlines?country={country_code}&category=health&apiKey={api_key}"
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        data = response.json()
+        return data.get("articles", [])
+    except requests.exceptions.RequestException as e:
+        return [] # Return empty list on error
 
 def autoplay_audio(audio_bytes: bytes):
     b64 = base64.b64encode(audio_bytes).decode()
@@ -112,21 +120,23 @@ with st.sidebar:
 st.title("AI Health Assistant")
 symptom_model, all_features, gender_encoder, all_symptoms = train_personalized_symptom_model()
 
-tab1, tab2, tab3 = st.tabs(["Super Chatbot (Voice Enabled)", "Personalized Predictor", "COVID-19 Dashboard"])
+tab1, tab2, tab3, tab4 = st.tabs(["Super Chatbot (Voice Enabled)", "Personalized Predictor", "COVID-19 Dashboard", "Health News"])
 
 with tab1:
     st.header("Your Personal AI Health Advisor")
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
+    
+    for message in st.session_state.chat_history:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
 
-    # This is the stable, single-pass logic for the chat
+    # This shared function handles a single, stable conversation turn
     def handle_chat_turn(prompt):
-        # Add user message to history and display it immediately
         st.session_state.chat_history.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        # Generate and display assistant response
         with st.chat_message("assistant"):
             lower_prompt = prompt.lower()
             critical_keywords = ['chest pain', 'breathing difficulty', 'suicide', 'emergency', 'heart attack', 'severe bleeding', 'unconscious']
@@ -151,11 +161,6 @@ with tab1:
                     if audio_bytes:
                         autoplay_audio(audio_bytes)
 
-    # Display chat history
-    for message in st.session_state.chat_history:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-
     # Voice input button
     if st.button("🎤 Ask with Voice"):
         r = sr.Recognizer()
@@ -164,14 +169,13 @@ with tab1:
             try:
                 audio = r.listen(source, timeout=5)
                 voice_prompt = r.recognize_google(audio, language=selected_language_code)
-                handle_chat_turn(voice_prompt) # Call the stable handler
+                handle_chat_turn(voice_prompt)
             except Exception as e:
                 st.warning("Could not process audio. Please try again or type.")
 
     # Text input
     if text_prompt := st.chat_input(f"Or type your question in {selected_language_name}..."):
-        handle_chat_turn(text_prompt) # Call the stable handler
-
+        handle_chat_turn(text_prompt)
 
 with tab2:
     st.header("Personalized Symptom Checker")
@@ -218,3 +222,18 @@ with tab3:
         fig = px.bar(df_sorted, x='State/UTs', y=selected_metric, title=f"State-wise Comparison of {selected_metric}")
         st.plotly_chart(fig, use_container_width=True)
     st.dataframe(covid_df)
+
+with tab4:
+    st.header(f"Latest Health News in India")
+    articles = fetch_health_news(NEWS_API_KEY)
+    if articles:
+        for article in articles[:10]: # Show top 10 articles
+            st.subheader(article['title'])
+            if article.get('urlToImage'):
+                st.image(article['urlToImage'])
+            st.write(article.get('description', 'No description available.'))
+            st.markdown(f"[Read Full Article]({article['url']})")
+            st.write(f"**Source:** {article['source']['name']}")
+            st.divider()
+    else:
+        st.info("Could not retrieve health news at this time.")
