@@ -213,7 +213,6 @@ with tab1:
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
     
-    # Display chat history, including the map if an emergency was triggered
     for message in st.session_state.chat_history:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
@@ -230,7 +229,6 @@ with tab1:
                     else:
                         st.warning("Could not find location to display map.")
     
-    # This logic now handles the two-step emergency state
     if st.session_state.get("emergency_detected"):
         with st.chat_message("assistant"):
             with open("assets/alert.mp3", "rb") as f: audio_bytes = f.read()
@@ -246,7 +244,6 @@ with tab1:
                 st.session_state.chat_history.append({"role": "assistant", "content": f"Showing hospitals near {location_input}", "is_emergency": True, "location": location_input})
                 st.rerun()
     else:
-        # This function handles a single, stable conversation turn
         def handle_chat_turn(prompt):
             st.session_state.chat_history.append({"role": "user", "content": prompt})
             lower_prompt = prompt.lower()
@@ -264,7 +261,6 @@ with tab1:
                     if audio_bytes: autoplay_audio(audio_bytes)
             st.rerun()
 
-        # Voice input button
         if st.button("🎤 Ask with Voice"):
             r = sr.Recognizer()
             with sr.Microphone() as source:
@@ -275,8 +271,6 @@ with tab1:
                     handle_chat_turn(voice_prompt)
                 except:
                     st.warning("Could not process audio.")
-        
-        # Text input
         if text_prompt := st.chat_input(f"Or type your question..."):
             handle_chat_turn(text_prompt)
 
@@ -333,7 +327,9 @@ with tab4:
     selected_metric = st.selectbox("Select a metric to visualize:", options=metric_options)
     if selected_metric:
         df_sorted = covid_df.sort_values(by=selected_metric, ascending=False)
-        fig = px.bar(df_sorted, x='State/UTs', y=selected_metric, title=f"State-wise Comparison of {selected_metric}", template="plotly_dark")
+        # --- THIS IS THE FIX ---
+        # We remove the template argument to let Streamlit handle the theme
+        fig = px.bar(df_sorted, x='State/UTs', y=selected_metric, title=f"State-wise Comparison of {selected_metric}")
         st.plotly_chart(fig, use_container_width=True)
     st.dataframe(covid_df)
 
@@ -370,11 +366,10 @@ with tab6:
     with st.expander("Myth: Cracking your knuckles causes arthritis."):
         st.write("**Fact:** While it might be an annoying habit, there is no scientific evidence to suggest that cracking your knuckles leads to arthritis.")
     with st.expander("Myth: You need to drink 8 glasses of water a day."):
-        st.write("**Fact:** This is a general guideline, not a strict medical requirement. Your hydration needs depend on your activity level, climate, and overall health.")
+        st.write("**Fact:** This is a general guideline, not a strict medical requirement.")
     st.divider()
     st.subheader("Frequently Asked Questions (FAQs)")
     with st.expander("What should I do for a common cold?"):
         st.write("Focus on rest and hydration. See a doctor if symptoms worsen or last more than 10 days.")
     with st.expander("How can I lower my blood pressure naturally?"):
         st.write("Lifestyle changes like regular exercise, a healthy diet, and reducing stress can help. Always discuss with your doctor.")
-
